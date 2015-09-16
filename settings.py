@@ -6,5 +6,7 @@ DB_PORT = 3306
 DB_DATABASE = "dss_creem"
 
 # calculator settings
+OUTPUT_TYPE = 'FILE' # options are FILE / DB
 OUTPUT_DIR = 'output'
 INTERNAL_TEMP = 21
+

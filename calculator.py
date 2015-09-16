@@ -1,33 +1,41 @@
 from database import Database
-import pprint
 import datetime
 import time
-import joiner
 import json
 from scipy import stats
 import numpy as np
-from settings import INTERNAL_TEMP as INTERNAL
-from settings import OUTPUT_DIR
+from settings import INTERNAL_TEMP, OUTPUT_DIR, OUTPUT_TYPE 
 import utils
+from writer import FileWriter, DbWriter
+from fancyprinter import FancyPrinter
+
+# from exceptions import NoWriterException
 
 class CurveCalculator(object):
 	"""docstring for CurveCalculator"""
 	def __init__(self):
 		super(CurveCalculator, self).__init__()
 	def calculate_coefficients(x_values, y_values):
-		slope, intercept, r_value, p_value, std_err = stats.linregress(x_values, y_values)
-		
+		slope, intercept, r_value, p_value, std_err = stats.linregress(x_values, y_values)		
 
 class SeasonEntry(object):
 	"""docstring for SeasonEntry"""
-	def __init__(self, begin, end):
+	def __init__(self, name, building, begin, end):
 		super(SeasonEntry, self).__init__()
 		self.begin = begin
 		self.end = end
+		self.name = name
+		self.building = building
 		if begin > end:
 			self.season_months = set(range(begin, 13)) | set(range(1, end + 1))
 		else:
 			self.season_months = set(range(begin, end + 1))
+		self.data = {}
+		self.coefficients = {
+			'working': {},
+			'saturdays': {},
+			'festivals': {},
+		}
 	def get_needed_data(self, consumptions, temperatures, profiles):
 		working_day_dataset = {idx: ([], []) for idx in range(0,24)}
 		saturday_dataset = {idx: ([], []) for idx in range(0,24)}
@@ -41,11 +49,20 @@ class SeasonEntry(object):
 					try:
 						temp_measurement = temperatures[date][hour]
 						current_dataset[hour][0].append(cons_measurement - profiles[profile_type][hour])
-						current_dataset[hour][1].append(abs(INTERNAL - temp_measurement))
+						current_dataset[hour][1].append(abs(INTERNAL_TEMP - temp_measurement))
 					except KeyError:
 						pass
-						# temp_measurement = None # may not be valid in the future
-		return working_day_dataset, saturday_dataset, sunday_dataset			
+		self.data['working'] = working_day_dataset
+		self.data['saturdays'] = saturday_dataset
+		self.data['festivals'] = sunday_dataset
+	def calculate_coefficients(self):
+		for type_of_day, dict in self.coefficients.iteritems():
+			for hour, value in self.data[type_of_day].iteritems():
+				slope, intercept, r_value, p_value, std_err = stats.linregress(value[0], value[1])
+				self.coefficients[type_of_day][hour] = {
+					'slope': slope, 
+					'intercept': intercept 
+				}
 
 class Calculator(object):
 	def __init__(self, buildings):
@@ -58,6 +75,12 @@ class Calculator(object):
 	def __enter__(self):
 		self.db.connect()
 		self.cursor = self.db.connection.cursor()
+		if OUTPUT_TYPE == 'FILE':
+			self.writer = FileWriter()
+		elif OUTPUT_TYPE == 'DB':
+			self.writer = DbWriter(self.connection)
+		else:
+			raise IOError()
 		return self
 
 	def __exit__(self, exc_type, exc_value, traceback):
@@ -89,8 +112,8 @@ class Calculator(object):
 		saturdays_profile_query = "SELECT * FROM dss_creem.dss_profili_pod_sabato where pod in (%s);"
 		festivals_profile_query = "SELECT * FROM dss_creem.dss_profili_pod_festivi where pod in (%s);"
 		pods_query = "SELECT pod from dss_immobili WHERE codice=\'%s\'"
-		consumption_query = "SELECT * FROM dss_creem.dss_datimultiorari where pod in (%s)"
-		temperature_query = "SELECT * from dss_meteo where IdComune=%d"
+		consumption_query = "SELECT * FROM dss_creem.dss_datimultiorari where pod in (%s) and year(data) < 2014"
+		temperature_query = "SELECT * from dss_meteo where IdComune=%d and year(Time) < 2014"
 		comune_query = "SELECT IdComune from dss_immobili where codice='%s'"
 
 		for building in self.buildings:
@@ -118,23 +141,17 @@ class Calculator(object):
 			self.cursor.execute(festivals_profile_query % pods_string)
 			self.profiles[building]['festivals'] = self.get_profile_object([el for el in self.cursor])
 			
-			self.calculate_coeffcients(building, consumptions, temperatures, self.profiles[building])
-	def calculate_coeffcients(self, building, consumptions, temperatures, profile):
+			self.create_seasons(building, consumptions, temperatures, self.profiles[building])
+	def create_seasons(self, building, consumptions, temperatures, profile):
 		print 'calculating and saving data for\t%s' % building
-		se = SeasonEntry(utils.months.JANUARY, utils.months.MAY)
-		# try:
-		# 	csv_work = open(OUTPUT_DIR + 'sadasdsa/' + building + '_work' + ".csv",'w')
-		# 	csv_sat = open(OUTPUT_DIR + '/' + building + '_sat' + ".csv",'w')
-		# 	csv_fest = open(OUTPUT_DIR + '/' + building + '_fest' + ".csv",'w')
-		# except IOError:
-		# 	print utils.bcolors.FAIL + 'directory not found!' + utils.bcolors.ENDC
-		# 	return
-		work, sat, fest = se.get_needed_data(consumptions, temperatures, profile)
-		for key, value in work.iteritems():
-			slope, intercept, r_value, p_value, std_err = stats.linregress(work[key][0], work[key][1])
-			self.save_curve_to_db(building, key, utils.dayTypes.WORKING, slope, intercept)
-		print 'Commiting to db.'
-		self.db.connection.commit()
+		se_w = SeasonEntry('winter', building, utils.months.JANUARY, utils.months.MAY)
+		se_s = SeasonEntry('summer', building, utils.months.JUNE, utils.months.SEPTEMBER)
+		se_w.get_needed_data(consumptions, temperatures, profile)
+		se_w.calculate_coefficients()
+		self.writer.save_season(se_w)
+		se_s.get_needed_data(consumptions, temperatures, profile)
+		se_s.calculate_coefficients()
+		self.writer.save_season(se_s)
 			# csv_work.write(str(key) + ',' + str(slope) + ',' + str(intercept) + '\n')
 			
 			# slope, intercept, r_value, p_value, std_err = stats.linregress(sat[key][0], sat[key][1])
