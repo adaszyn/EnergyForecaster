@@ -13,7 +13,7 @@ python main.py
 
 ## Motivation
 
-The script was written during summer internship in Softeco Sismat. It was a part of CREEM application.
+The script was written during summer internship in Softeco Sismat. It was a part of research on 'Energy consumption forecasting'. Please check out *research_presentation.pdf* for more details.
 
 
 ## Contributors
