@@ -8,11 +8,34 @@ class FancyPrinter:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
-    def warning(self, message):
-    	print self.WARNING + message + self.ENDC
-    def blue(self, message):
-    	print self.OKBLUE + message + self.ENDC
-    def green(self, message):
-    	print self.OKGREEN + message + self.ENDC
-    def error(self, message):
-    	print self.FAIL + message + self.ENDC 
+    @staticmethod
+    def print_warning(message):
+        print FancyPrinter.WARNING + message + FancyPrinter.ENDC
+
+    @staticmethod
+    def print_blue(message):
+        print FancyPrinter.OKBLUE + message + FancyPrinter.ENDC
+
+    @staticmethod
+    def print_green(message):
+        print FancyPrinter.OKGREEN + message + FancyPrinter.ENDC
+
+    @staticmethod
+    def print_error(message):
+        print FancyPrinter.FAIL + message + FancyPrinter.ENDC
+
+    @staticmethod
+    def get_warning(message):
+        print FancyPrinter.WARNING + message + FancyPrinter.ENDC
+
+    @staticmethod
+    def get_blue(message):
+        print FancyPrinter.OKBLUE + message + FancyPrinter.ENDC
+
+    @staticmethod
+    def get_green(message):
+        print FancyPrinter.OKGREEN + message + FancyPrinter.ENDC
+
+    @staticmethod
+    def get_error(message):
+        print FancyPrinter.FAIL + message + FancyPrinter.ENDC

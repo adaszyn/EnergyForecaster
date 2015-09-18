@@ -30,8 +30,9 @@ class FileWriter(Writer):
 				file_name = settings.OUTPUT_DIR + '/' + season.building + '_' + season.name + '_' + type_of_day
 				file_handle = open(file_name, 'w')
 				writer = csv.writer(file_handle)
+				writer.writerow(('hour', 'slope_heating', 'intercept_heating', 'slope_cooling', 'intercept_cooling'))
 				for hour, coefs in values.iteritems():
-					writer.writerow((hour, coefs['slope'], coefs['intercept']))
+					writer.writerow((hour, coefs['heating']['slope'], coefs['heating']['intercept'], coefs['cooling']['slope'], coefs['cooling']['intercept']))
 			except IOError:
 				FancyPrinter().error('No such directory for saving files!')
 				return

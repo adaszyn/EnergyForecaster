@@ -4,12 +4,10 @@ import time
 import json
 from scipy import stats
 import numpy as np
-from settings import INTERNAL_TEMP, OUTPUT_DIR, OUTPUT_TYPE 
+from settings import INTERNAL_TEMP, OUTPUT_DIR, OUTPUT_TYPE, MIN_CORRELATION, MIN_SET
 import utils
 from writer import FileWriter, DbWriter
 from fancyprinter import FancyPrinter
-
-# from exceptions import NoWriterException
 
 class CurveCalculator(object):
 	"""docstring for CurveCalculator"""
@@ -20,12 +18,14 @@ class CurveCalculator(object):
 
 class SeasonEntry(object):
 	"""docstring for SeasonEntry"""
-	def __init__(self, name, building, begin, end):
+	def __init__(self, name, building, begin, end, profiles, internal):
 		super(SeasonEntry, self).__init__()
 		self.begin = begin
 		self.end = end
 		self.name = name
 		self.building = building
+		self.profiles = profiles
+		self.internal = internal
 		if begin > end:
 			self.season_months = set(range(begin, 13)) | set(range(1, end + 1))
 		else:
@@ -36,33 +36,58 @@ class SeasonEntry(object):
 			'saturdays': {},
 			'festivals': {},
 		}
-	def get_needed_data(self, consumptions, temperatures, profiles):
-		working_day_dataset = {idx: ([], []) for idx in range(0,24)}
-		saturday_dataset = {idx: ([], []) for idx in range(0,24)}
-		sunday_dataset = {idx: ([], []) for idx in range(0,24)}
+	def get_needed_data(self, consumptions, temperatures):
+		datasets = {
+			'working': {idx: {'heating': [[], []], 'cooling': [[], []]} for idx in range(0,24)},
+			'saturdays': {idx: {'heating': [[], []], 'cooling': [[], []]} for idx in range(0,24)},
+			'festivals': {idx: {'heating': [[], []], 'cooling': [[], []]} for idx in range(0,24)}
+		}
 		for date in consumptions.keys():
-			if date.month in self.season_months:
+ 			if date.month in self.season_months:
 				weekday = date.weekday()
 				profile_type = ('working' if weekday < 5 else ('saturdays' if weekday == 5 else 'festivals'))
-				current_dataset = (working_day_dataset if weekday < 5 else (saturday_dataset if weekday == 5 else sunday_dataset))
+				current_dataset = (datasets['working'] if weekday < 5 else (datasets['saturdays'] if weekday == 5 else datasets['festivals']))
 				for hour, cons_measurement in consumptions[date].iteritems():
 					try:
 						temp_measurement = temperatures[date][hour]
-						current_dataset[hour][0].append(cons_measurement - profiles[profile_type][hour])
-						current_dataset[hour][1].append(abs(INTERNAL_TEMP - temp_measurement))
+		
+						if temp_measurement >= self.internal:
+							current_dataset[hour]['cooling'][0].append(cons_measurement - self.profiles[profile_type][hour])
+							current_dataset[hour]['cooling'][1].append(abs(INTERNAL_TEMP - temp_measurement))
+						else:
+							current_dataset[hour]['heating'][0].append(cons_measurement - self.profiles[profile_type][hour])
+							current_dataset[hour]['heating'][1].append(abs(INTERNAL_TEMP - temp_measurement))
+
 					except KeyError:
 						pass
-		self.data['working'] = working_day_dataset
-		self.data['saturdays'] = saturday_dataset
-		self.data['festivals'] = sunday_dataset
-	def calculate_coefficients(self):
-		for type_of_day, dict in self.coefficients.iteritems():
+		for dataset_key in datasets.keys():
+			for hour, sets in datasets[dataset_key].iteritems():
+				if (len(sets['cooling'][0]) < MIN_SET or len(sets['heating'][0]) < MIN_SET):
+					sets['cooling'][0] = sets['cooling'][0] + sets['heating'][0] 
+					sets['cooling'][1] = sets['cooling'][1] + sets['heating'][1] 
+					sets['heating'][0] = sets['cooling'][0] 
+					sets['heating'][1] = sets['cooling'][1] 
+	
+		for dataset_key in datasets.keys():
+			self.data[dataset_key] = datasets[dataset_key]
+
+	def calculate_coefficients(self):	
+		for type_of_day, coef_dict in self.coefficients.iteritems():
 			for hour, value in self.data[type_of_day].iteritems():
-				slope, intercept, r_value, p_value, std_err = stats.linregress(value[0], value[1])
-				self.coefficients[type_of_day][hour] = {
-					'slope': slope, 
-					'intercept': intercept 
+				slope_h, intercept_h, r_value_h, p_value_h, std_err_h = stats.linregress(value['heating'][1], value['heating'][0])
+				slope_c, intercept_c, r_value_c, p_value_c, std_err_c = stats.linregress(value['cooling'][1], value['cooling'][0])
+				r_value_h = abs(r_value_h)
+				r_value_c = abs(r_value_c)
+				coef_dict[hour] = {'heating': (), 'cooling': ()}
+				coef_dict[hour]['cooling'] = {
+					'slope': (slope_c if r_value_c > MIN_CORRELATION else 0), 
+					'intercept': (intercept_c if r_value_c > MIN_CORRELATION else 0) 
 				}
+				coef_dict[hour]['heating'] = {
+					'slope': (slope_h if r_value_h > MIN_CORRELATION else 0), 
+					'intercept': (intercept_h if r_value_h > MIN_CORRELATION else 0) 
+				}	
+
 
 class Calculator(object):
 	def __init__(self, buildings):
@@ -71,7 +96,6 @@ class Calculator(object):
 		
 		self.buildings = buildings
 		self.profiles = {building: {'working':{}, 'saturdays': {}, 'festivals': {}} for building in buildings}
-		self.startdate = datetime.date(2014, 2, 26)
 	def __enter__(self):
 		self.db.connect()
 		self.cursor = self.db.connection.cursor()
@@ -85,6 +109,10 @@ class Calculator(object):
 
 	def __exit__(self, exc_type, exc_value, traceback):
 		self.db.close_connection()
+
+	def get_internal_temperature(self, building):
+		# TODO implement method
+		return 21
 
 	def get_consumption_object(self, tuples):
 		result = {}
@@ -144,23 +172,17 @@ class Calculator(object):
 			self.create_seasons(building, consumptions, temperatures, self.profiles[building])
 	def create_seasons(self, building, consumptions, temperatures, profile):
 		print 'calculating and saving data for\t%s' % building
-		se_w = SeasonEntry('winter', building, utils.months.JANUARY, utils.months.MAY)
-		se_s = SeasonEntry('summer', building, utils.months.JUNE, utils.months.SEPTEMBER)
-		se_w.get_needed_data(consumptions, temperatures, profile)
+		internal = self.get_internal_temperature(building)
+		se_w = SeasonEntry('winter', building, utils.months.JANUARY, utils.months.MAY, profile, internal)
+		se_s = SeasonEntry('summer', building, utils.months.JUNE, utils.months.SEPTEMBER, profile, internal)
+		se_w.get_needed_data(consumptions, temperatures)
 		se_w.calculate_coefficients()
 		self.writer.save_season(se_w)
-		se_s.get_needed_data(consumptions, temperatures, profile)
+		se_s.get_needed_data(consumptions, temperatures)
 		se_s.calculate_coefficients()
 		self.writer.save_season(se_s)
-			# csv_work.write(str(key) + ',' + str(slope) + ',' + str(intercept) + '\n')
-			
-			# slope, intercept, r_value, p_value, std_err = stats.linregress(sat[key][0], sat[key][1])
-			# csv_sat.write(str(key) + ',' + str(slope) + ',' + str(intercept) + '\n')
-			
-			# slope, intercept, r_value, p_value, std_err = stats.linregress(fest[key][0], fest[key][1])
-			# csv_fest.write(str(key) + ',' + str(slope) + ',' + str(intercept) + '\n')
+		
 	def save_curve_to_db(self,building, hour, day_type, slope, intercept):
 		instert_query = "INSERT INTO dss_predicto_lunven(codice, ora, stagione, slope, intercept) VALUES (\'%s\', %d,%d,%s, %s)"
-		# print instert_query % (building, hour, day_type, str(slope), str(intercept))
 		self.cursor.execute(instert_query % (building, hour, day_type, str(slope), str(intercept))) 
 

@@ -10,3 +10,6 @@ OUTPUT_TYPE = 'FILE' # options are FILE / DB
 OUTPUT_DIR = 'output'
 INTERNAL_TEMP = 21
 
+# math
+MIN_CORRELATION = 0.0
+MIN_SET = 10
